@@ -1,0 +1,149 @@
+---
+title: 'SNR: Behavioral Results'
+author: 'Christopher W. Bishop'
+output: 
+  pdf_document:
+    toc: true
+    toc_depth: 3
+---
+
+## Overview
+
+Michael Lee provided a preliminary pass of HINT data from UW/UofI. Here is a quick and dirty breakdown of the data.
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, fig.path='Figs/',
+                      echo=FALSE, warning=FALSE, message=FALSE)
+```
+```{r}
+# Preamble to load libraries, massage data
+library(readr)
+library(dplyr)
+library(ggplot2)
+
+# Load in data
+hint_default = read_csv('Default_calculation_batch_HINT.csv')
+hint_reversal = read_csv('Reversal_mean_calculation_batch_HINT.csv')
+
+# Coerce subject IDs to strings
+hint_default = hint_default %>% mutate(SubID = as.character(SubID))
+hint_reversal = hint_reversal %>% mutate(SubID = as.character(SubID))
+
+# Add in site codes
+site_code = unlist( (hint_default %>% rowwise %>% do(site=if(.$SubID<2000){'UW'}else{'Iowa'}))$site )
+hint_default = hint_default %>% mutate(site = site_code)
+
+# Repeat for hint_reversal
+site_code = unlist( (hint_reversal %>% rowwise %>% do(site=if(.$SubID<2000){'UW'}else{'Iowa'}))$site )
+hint_reversal = hint_reversal %>% mutate(site = site_code)
+
+# Function to plot each subject's data, facet by noise type
+plot.measure <- function(df_table, var){
+  "
+  Plot variable of interest for each subscriber by site/noise type
+  "
+  
+  plot = ggplot(df_table %>% mutate(SubID=as.character(SubID)), aes_string(x='SubID', y=var, fill='site')) + 
+          geom_bar(stat='identity') + 
+          theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+          facet_wrap(~noise_type, ncol=1)
+  
+  return(plot)
+  
+}
+
+summarise.table <- function(df_table){
+  "
+  Summarises tables with mean/sd
+  "
+  table_summary = df_table %>% 
+                  group_by(site, noise_type) %>% 
+                  summarise_each(funs(mean(., na.rm=TRUE), sd(., na.rm=TRUE)), matches('mean|slope'))
+  
+  return(table_summary)
+  
+}
+
+plot.summary <- function(df_table, var){
+  "
+  Quick and dirty summary plots
+  "
+  
+  # Get table summaries
+  table_summary = summarise.table(df_table)
+  
+  # Create plots with table summaries
+  plot = ggplot(table_summary, aes_string(x='noise_type', y=paste0(var, '_mean'), fill='site')) + 
+         geom_bar(position='dodge', stat='identity')
+         # geom_errorbar(aes_string(ymin=paste0(var, '_mean') - paste0(var, '_sd'), ymax=paste0(var, '_mean')+paste0(var, '_sd')), position='dodge')
+  
+  return(plot)
+}
+```
+
+### Default Scoring
+
+Below are subject-by-subject data points from UW/UofI using the default scoring parameters.
+
+**Note**: U of I has twice as many subjects as UW, so interpretations will need to be coloured accordingly.
+
+```{r}
+print(plot.measure(hint_default, 'mean_SNR50'))
+print(plot.measure(hint_default, 'mean_SNR80'))
+print(plot.measure(hint_default, 'slope'))
+```
+
+- Qualitatively, there seem to be intersite differences, particularly with SPSHN SNR80/SNR50 estimates.
+- There are slope outliers we'll need to look into and deal with accordingly. Particularly interested in ISTS from Iowa.
+
+**Michael**: Can you please provide some detail as to how you calculated slope_dB? I know we've decided to throw that measure out, but I want to make sure we are calculating the slope appropriately ... and I'm not sure how slope and slope_dB can differ as much as they do. And And sometimes (e.g., 1014), the two measures differ in sign.
+
+Below are summary figures (no statistics yet) for each of the three measures plotted in detail above.
+
+```{r}
+# Plot out summaries by variable
+print(plot.summary(hint_default, 'mean_SNR50'))
+print(plot.summary(hint_default, 'mean_SNR80'))
+print(plot.summary(hint_default, 'slope'))
+```
+
+- These averages should be interpretted with considerable caution. I have done *nothing* to deal with outliers or impute missing data intelligently. Too tired to do either, at the moment.
+    - Regardless, we are seeing some reasonably large intersite differences in our HINT scoring. Need to look into this.
+
+### Reversal Scoring
+
+Below, SNR-50 and SNR-80 calculations are both scored using the mean of N reversals.
+
+**Michael**: can you please confirm how many reversals we are using for scoring and their relative positions (e.g., reversals 2-6)? Do all subjects have all reversals? I seem to recall we adapted the SNR-50 protocol later in the game, so I wouldn't expect all subjects to have enough reversals unless we were extremely lucky. Or I'm very tired. One of those is a certainty.
+
+Below are subject-wise plots of SNR50/80/and slope.
+
+
+```{r}
+print(plot.measure(hint_reversal, 'mean_SNR50'))
+print(plot.measure(hint_reversal, 'mean_SNR80'))
+print(plot.measure(hint_reversal, 'slope'))
+```
+
+- Again, we're seeing outliers in slope, but they're far less extreme it seems.
+- **Michael** can you cross-check these figures with those above? Are the outliers the same subjects?
+
+Below are the measure summaries using reversal scoring.
+
+```{r}
+# Plot out summaries by variable
+print(plot.summary(hint_default, 'mean_SNR50'))
+print(plot.summary(hint_default, 'mean_SNR80'))
+print(plot.summary(hint_default, 'slope'))
+```
+
+- We're still seeing intersite differences, with generally higher SNRs at UW than Iowa.
+
+**Anyone have any thoughts on why this might be?**
+
+## To Do
+
+- Rerun analyses and deal with outliers in an intelligent way.
+    - Double check computations
+- Combine with data from REDCAP!!
+- Publish.
