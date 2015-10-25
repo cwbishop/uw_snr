@@ -1,0 +1,103 @@
+---
+title: "HINT Time Series"
+author: "Christopher W Bishop"
+date: "10/24/2015"
+output: html_document
+---
+
+## Overview
+
+We would like to analyze HINT time series data in greater detail.
+
+```{r}
+library(readr)
+library(dplyr)
+library(stringr)
+library(foreach)
+library(ggplot2)
+
+setwd('~/Documents/GitHub/uw_snr/')
+
+# Read in data
+file = 'batch_HINT_TimeSeries.csv'
+
+
+# Reshape into a more useful format
+import.hint.ts <- function(file){
+  "
+  Read in HINT time series data and fill massage it into a more useful format
+  "
+  raw = read_csv(file)
+  
+  
+  hint_ts <- foreach (i=seq(1, nrow(raw)), .combine=rbind) %do% {
+    
+    # Get temporary data frame
+    tmp = raw[i,]
+    
+    # Split test_id
+    test_id = str_split(tmp$Test_ID, '_')[[1]]
+    
+    # Get time series
+    series = str_replace_all(tmp$Time_Series, '\\[|\\]', '') %>% str_split(';') %>% unlist() %>% as.integer()
+    
+    # New data frame
+    return(data.frame(sub_id=tmp$SubID, test_id=test_id[2], masker=test_id[3], snr=series, trial=seq(1,length(series))))
+    
+  }
+  
+  # Score each subject/test
+  hint_ts = 
+    hint_ts %>%
+    filter(!is.na(snr)) %>%
+    group_by(sub_id, test_id, masker) %>% 
+    mutate(delta = lead(snr) - snr) %>% 
+    mutate(score= ifelse(delta<=0, 100, 0))
+  
+  return(hint_ts)
+  
+}
+
+# Get scored data
+hint_ts = import.hint.ts(file)
+
+# Construct logistic regression models
+models = 
+  hint_ts %>%
+  group_by(sub_id, masker) %>% # want a different fit for each subject/masker
+  do(mod = glm(score/100 ~ snr, data=., family='binomial'))
+```
+
+```{r}
+# Plot out all models and model fits
+plots <- foreach (i=1:nrow(models)) %do%{
+  
+  # Get the current model
+  mod = models[i,]
+  
+  # Need original data to get relevant SNR range
+  snr =
+    hint_ts %>%
+    filter(sub_id==mod$sub_id, masker==mod$masker)
+  
+  # Domain
+  x = seq(min(snr$snr), max(snr$snr),1) # 1 dB steps to start
+  
+  # Response
+  y = predict(mod$mod[[1]], data.frame(snr=x), type='response')
+  
+  # Create plot
+  ggplot(
+    data.frame(x=x, y=y), 
+    aes(x=x, y=y)) + geom_point(size=3) + # plot fit
+    geom_line(size=2) +  
+    geom_point(data=snr, aes(x=snr, y=score/100), colour='red', size=4, position=position_jitter(h=0.1, w=0.1)) + # plot original data points
+    #geom_jitter(data=snr, aes(x=snr, y=score/100)) + # jitter plotted points so they aren't stacked on top of one another.
+    ggtitle(paste0(mod$sub_id, '-', mod$masker)) + # put a title on it!
+    ylab('Score') +
+    xlab('SNR (dB)') +
+    scale_x_continuous(breaks=seq(min(x), max(x), 1)) + # 1 dB ticks
+    ylim(0, 1) + # show full axes
+    scale_y_continuous(breaks=seq(0,1,0.05))
+}
+```
