@@ -1,26 +1,38 @@
 ---
-title: "HINT Time Series"
+title: "HINT Slope Estimates"
 author: "Christopher W Bishop"
-date: "10/24/2015"
+date: "11/22/2015"
 output: html_document
 ---
 
-## Overview
-
-We would like to analyze HINT time series data in greater detail.
-
 ```{r}
+##############
+# Libraries
+##############
 library(readr)
 library(dplyr)
 library(stringr)
 library(foreach)
 library(ggplot2)
 
-setwd('~/Documents/GitHub/uw_snr/')
+###############
+# Global Variables
+###############
 
-# Read in data
-file = 'batch_HINT_TimeSeries.csv'
+# Hint Time seris file
+timeseries_file = 'batch_HINT_TimeSeries.csv'
 
+
+###############
+# Helper Functions
+###############
+
+assign.site <- function(df_table){
+  "
+  Assign UW/UofI testing site
+  "
+  return(df_table %>% mutate(site=ifelse(sub_id>=1999, 'UofI', 'UW')))
+}
 
 # Reshape into a more useful format
 import.hint.ts <- function(file){
@@ -52,52 +64,158 @@ import.hint.ts <- function(file){
     filter(!is.na(snr)) %>%
     group_by(sub_id, test_id, masker) %>% 
     mutate(delta = lead(snr) - snr) %>% 
-    mutate(score= ifelse(delta<=0, 100, 0))
+    mutate(score= ifelse(delta<=0, 100, 0)) %>%
+    assign.site()
   
   return(hint_ts)
   
 }
 
+###############
+# Measurement Functions
+###############
+
+# Estimate slope at 50% of fitted model
+meas.slope <- function(mod, yval=0.50, xmin, xmax, step_size){
+  "
+  Approximate slope of a fitted model at the specified y-value.
+
+  This proved useful when trying to estimate the first order 
+  derivative at ~50% for HINT psychometric functions.
+  "
+  
+  # Get x/y values for interpolated fit.
+  x = seq(xmin, xmax, step_size)
+  y = predict(mod, data.frame(snr=x), type='response')
+  
+  # Convert to dataframe so we can leverage dplyr for filtering.
+  fit = data.frame(x, y)
+  
+  # The following is used to estimate the slope.
+  #   1) Find the two closest points to y-value
+  #   2) compute slope between points
+  slope = 
+    fit %>% 
+    arrange(x) %>% 
+    mutate(delta=abs(y-yval)) %>% 
+    arrange((delta)) %>% 
+    slice(1:2) %>% 
+    mutate_each(funs(diff)) %>% 
+    slice(1) %>% 
+    mutate(slope = y/x)
+  
+  slope = slope$slope
+  
+  return(slope)
+  
+}
+```
+
+```{r load_hint_data}
 # Get scored data
 hint_ts = import.hint.ts(file)
 
+```
+
+```{r logit_fit}
+
 # Construct logistic regression models
+#   Models is a data frame with subject_id, masker type, and fit class.
 models = 
   hint_ts %>%
   group_by(sub_id, masker) %>% # want a different fit for each subject/masker
   do(mod = glm(score/100 ~ snr, data=., family='binomial'))
+
 ```
 
 ```{r}
-# Plot out all models and model fits
-plots <- foreach (i=1:nrow(models)) %do%{
-  
-  # Get the current model
-  mod = models[i,]
-  
-  # Need original data to get relevant SNR range
-  snr =
-    hint_ts %>%
-    filter(sub_id==mod$sub_id, masker==mod$masker)
-  
-  # Domain
-  x = seq(min(snr$snr), max(snr$snr),1) # 1 dB steps to start
-  
-  # Response
-  y = predict(mod$mod[[1]], data.frame(snr=x), type='response')
-  
-  # Create plot
-  ggplot(
-    data.frame(x=x, y=y), 
-    aes(x=x, y=y)) + geom_point(size=3) + # plot fit
-    geom_line(size=2) +  
-    geom_point(data=snr, aes(x=snr, y=score/100), colour='red', size=4, position=position_jitter(h=0.1, w=0.1)) + # plot original data points
-    #geom_jitter(data=snr, aes(x=snr, y=score/100)) + # jitter plotted points so they aren't stacked on top of one another.
-    ggtitle(paste0(mod$sub_id, '-', mod$masker)) + # put a title on it!
-    ylab('Score') +
-    xlab('SNR (dB)') +
-    scale_x_continuous(breaks=seq(min(x), max(x), 1)) + # 1 dB ticks
-    ylim(0, 1) + # show full axes
-    scale_y_continuous(breaks=seq(0,1,0.05))
-}
+# # Estimate slopes for each subject in each condition. Append to models structure
+# slopes <- foreach(i=1:nrow(models), .combine=rbind) %do%{
+#   
+#   mod = models[i,]
+#   
+#   # Need original data to get relevant SNR range
+#   snr =
+#     hint_ts %>%
+#     filter(sub_id==mod$sub_id, masker==mod$masker)
+#   
+#   # Estimate slope at 50% point with 0.001 dB steps
+#   slope = meas.slope(mod$mod[[1]], yval=0.5, xmin=min(snr$snr), xmax=max(snr$snr), step_size=0.001)
+#   
+#   return(mod %>% mutate(slope=slope*100))
+#   
+# }
+# 
+# # Add site labels
+# slopes = slopes %>% assign.site()
+# 
+# # Create plots
+# ggplot(slopes, aes(x=slope, fill=masker)) + 
+#   geom_histogram(colour='black') + 
+#   facet_wrap(~site, ncol=1) + 
+#   xlab('Slope (%/dB)')
 ```
+
+```{r individual_plots}
+# Disabled for the time being.
+
+# Plot out all models and model fits
+# plots <- foreach (i=1:nrow(models)) %do%{
+#   
+#   # Get the current model
+#   mod = models[i,]
+#   
+#   # Need original data to get relevant SNR range
+#   snr =
+#     hint_ts %>%
+#     filter(sub_id==mod$sub_id, masker==mod$masker)
+#   
+#   # Domain
+#   x = seq(min(snr$snr), max(snr$snr),1) # 1 dB steps to start
+#   
+#   # Response
+#   y = predict(mod$mod[[1]], data.frame(snr=x), type='response')
+#   
+#   # Create plot
+#   ggplot(
+#     data.frame(x=x, y=y), 
+#     aes(x=x, y=y)) + geom_point(size=3) + # plot fit
+#     geom_line(size=2) +  
+#     geom_point(data=snr, aes(x=snr, y=score/100), colour='red', size=4, position=position_jitter(h=0.1, w=0.1)) + # plot original data points
+#     #geom_jitter(data=snr, aes(x=snr, y=score/100)) + # jitter plotted points so they aren't stacked on top of one another.
+#     ggtitle(paste0(mod$sub_id, '-', mod$masker)) + # put a title on it!
+#     ylab('Score') +
+#     xlab('SNR (dB)') +
+#     scale_x_continuous(breaks=seq(min(x), max(x), 1)) + # 1 dB ticks
+#     ylim(0, 1) + # show full axes
+#     scale_y_continuous(breaks=seq(0,1,0.05))
+# }
+```
+
+## Overview
+
+During preliminary analysis, Michael Lee and Chris Bishop found that individual slope estimates were unreliable when using estimated SNR-50/-80 as data points. For instance, several subjects had very large (>100 %/dB) slopes, suggesting that SNR-50 and SNR-80 estimates were nearly identical. This is unexpected from a psychophysical point of view and CWB suggsted that this was due to the inherent noise in staircase-driven estimates.
+
+Additionally, CWB suggested an alternative approach by which all individual trials for a given noise type were used to generate a subject-and-masker-specific psychometric function. This function could then be used to derive slope information in a more robust way.
+
+This report is CWB's attempt to apply and vet the approach above.
+
+## Approach in Detail
+
+XXX
+
+## Slope Estimates Using Binary Outcomes
+
+The following section describes psychometric fits following the traditional HINT scoring criteria. That is, each trial is either correct (all words repeated correctly) or incorrect (one or more words not repeated correctly).
+
+The psychometric fits in this section will relate most directly to existing HINT literature and findings.
+
+```{r binary_fits}
+```
+### Individual Fits
+
+### Group Results
+
+## Slope Estimates Using Continuous Outcomes
+
+## Summary
