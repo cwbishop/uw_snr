@@ -1,0 +1,72 @@
+---
+title: "SII"
+author: "Christopher W Bishop"
+date: "10/25/2015"
+output: html_document
+---
+
+```{r}
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(GGally)
+
+data = read_excel('For SPSS2.xlsx')
+
+# Add site information and clean data a bit
+data =
+  data %>%
+  filter(!is.na(subject_id)) %>% # remove what look to be bogus entries
+  filter(subject_id>1010) %>%
+  mutate(site=ifelse(subject_id>=1999, 'UofI', 'UW'))
+
+# Impute missing values
+#   A bit quick-and-dirty, but a decent starting place.
+#   Fills in missing values with the site-specific mean.
+data = 
+  data %>% 
+  group_by(site) %>%
+  mutate_each(funs(ifelse(is.na(.), mean(., na.rm=TRUE), .)))
+
+# Need SII values.
+data = data %>% filter(!is.na(AverageSII) & !is.na(BestSII))
+
+```
+
+```{r, fig.cap='SII vs. APHAB'}
+# Start with pairwise plots
+ggpairs(data %>% select(BestSII, AverageSII, contains('aphab')), color='site')
+```
+
+This is a bit overwhelming to look at, but some decent takeaways.
+
+- APHAB categories are generally correlated with each other. So dimensionality reduction likely necessary (e.g., PCA via SVD)
+- There are a number of outliers we'll need to deal with.
+    - Seem to be more outliers at UofI than UW.
+    - May need to transform data
+- Sites are *generally* comparable.
+
+```{r, fig.cap='SII vs. SADL'}
+ggpairs(data %>% select(BestSII, AverageSII, contains('sadl')), color='site')
+```
+
+- sadl_nf may be correlated with best 
+- Several f the sadl metrics are correlated (so redundant information captured in each).
+
+```{r, fig.cap='SII vs. DOSO'}
+ggpairs(data %>% select(BestSII, AverageSII, contains('doso')), color='site')
+```
+
+- Again, there are outliers we'll need to deal with, particularly at UofI
+    - See dosoa_us. What to do with those massive outliers?
+- Again, subscores are correlated. This will be a pain to work through.
+
+```{r, fig.cap='SII vs. Aided HHIE'}
+ggpairs(data %>% select(BestSII, AverageSII, contains('HHIE')), color='site')
+```
+
+```{r, fig.cap='SII vs. IOIHA'}
+ggpairs(data %>% select(BestSII, AverageSII, contains('ioiha')), color='site')
+```
+
+- Eek, outliers galore!
