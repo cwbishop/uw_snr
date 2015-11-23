@@ -5,6 +5,12 @@ date: "11/22/2015"
 output: html_document
 ---
 
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, fig.path='Figs/',
+                      echo=FALSE, warning=FALSE, message=FALSE)
+```
+
 ```{r}
 ##############
 # Libraries
@@ -14,6 +20,7 @@ library(dplyr)
 library(stringr)
 library(foreach)
 library(ggplot2)
+library(gridExtra)
 
 ###############
 # Global Variables
@@ -22,6 +29,8 @@ library(ggplot2)
 # Hint Time seris file
 timeseries_file = 'batch_HINT_TimeSeries.csv'
 
+# Reversal mean scoring file
+reversal_score_file = 'Reversal_mean_calculation_batch_HINT.csv'
 
 ###############
 # Helper Functions
@@ -71,6 +80,27 @@ import.hint.ts <- function(file){
   
 }
 
+get.model.slopes <- function(models){
+  
+  slopes <- foreach(i=1:nrow(models), .combine=rbind) %do%{
+  
+    mod = models[i,]
+  
+    # Need original data to get relevant SNR range
+    snr =
+      hint_ts %>%
+      filter(sub_id==mod$sub_id, masker==mod$masker)
+    
+    # Estimate slope at 50% point with 0.001 dB steps
+    slope = meas.slope(mod$mod[[1]], yval=0.5, xmin=min(snr$snr), xmax=max(snr$snr), step_size=0.001)
+    
+    return(mod %>% mutate(slope=slope*100))
+    
+  }
+  
+  return(slopes)
+  
+}
 ###############
 # Measurement Functions
 ###############
@@ -113,38 +143,225 @@ meas.slope <- function(mod, yval=0.50, xmin, xmax, step_size){
 
 ```{r load_hint_data}
 # Get scored data
-hint_ts = import.hint.ts(file)
+hint_ts = import.hint.ts(timeseries_file)
 
+hint_reversal =
+  read_csv(reversal_score_file) %>%
+  rename(sub_id=SubID, masker=noise_type) %>%
+  assign.site() %>%
+  select(-contains('slope'), -contains('sd'), -contains('sd'), -contains('SRT')) %>%
+  rename(snr50_staircase = mean_SNR50, snr80_staircase = mean_SNR80)
 ```
 
-```{r logit_fit}
+## Overview
 
+During preliminary analysis, Michael Lee and Chris Bishop found that individual slope estimates were unreliable when using estimated SNR-50/-80 as data points. For instance, several subjects had very large (>100 %/dB) slopes, suggesting that SNR-50 and SNR-80 estimates were nearly identical. This is unexpected from a psychophysical point of view and CWB suggsted that this was due to the inherent noise in staircase-driven estimates.
+
+Additionally, CWB suggested an alternative approach by which all individual trials for a given noise type were used to generate a subject-and-masker-specific psychometric function. This function could then be used to derive slope information in a more robust way.
+
+This report is CWB's attempt to apply and vet the approach above.
+
+## Approach in Detail
+
+XXX
+
+## Slope Estimates Using Binary Outcomes
+
+The following section describes psychometric fits following the traditional HINT scoring criteria. That is, each trial is either correct (all words repeated correctly) or incorrect (one or more words not repeated correctly).
+
+The psychometric fits in this section will relate most directly to existing HINT literature and findings.
+
+```{r binary_fits_and slopes}
 # Construct logistic regression models
 #   Models is a data frame with subject_id, masker type, and fit class.
 models = 
   hint_ts %>%
-  group_by(sub_id, masker) %>% # want a different fit for each subject/masker
+  group_by(sub_id, masker, site) %>% # want a different fit for each subject/masker
   do(mod = glm(score/100 ~ snr, data=., family='binomial'))
 
+# Add reverals scores to data frame.
+#   This will make plotting easier below
+models =
+  models %>% 
+  left_join(hint_reversal)
+
+# Estimate slopes
+models = 
+  get.model.slopes(models) %>%
+  rename(slope_psycho = slope)
+
+# Add psychometric fit slopes to data frame
+# models = 
+#   models %>% 
+#   left_join(slopes, by=c('sub_id', 'masker', 'site')) %>% 
+#   select(-mod.y) %>% 
+#   rename(mod=mod.x) %>%
+#   rename(slope_psycho = slope)
+
+# Now add slope estimates based on SNR-80 (really 79) to SNR-50
+subject_data =
+  models %>%
+  mutate(slope_staircase = 29 / (snr80_staircase - snr50_staircase)) %>%
+  mutate(slope_diff = slope_psycho - slope_staircase)
+```
+
+### Slope Comparison
+
+This section compares the slope estimates using the two approaches. Slope is either derived from the psychometric function (slope_psycho) or by using the staircase estimates for SNR-50/-80.
+
+```{r slope_comparison, results='asis'}
+ggplot(subject_data,
+       aes(x=slope_psycho, y=slope_staircase, colour=site)) +
+  geom_point() +
+  xlab('Psychometric Function Slope') +
+  ylab('Slope from Staircase')
+```
+
+- The data show that there are often very large differences in slope estimates using these two approaches. For instance, with subject 1014 SPSHN, the slope estimes differ by ~45%/dB.
+- The plot above isn't very helpful due to the outrageous outliers resulting from slope estimates using the staircase approach.
+
+### Group Results
+
+Here, slopes for individual subjects are plotted for each noise condition.
+
+```{r binar_individual_slopes}
+ggplot(subject_data, aes(x=as.character(sub_id), y=slope_psycho, fill=site)) +
+  geom_bar(stat='identity', colour='black') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  facet_wrap(~masker, ncol=1) +
+  xlab('Subject ID') +
+  ylab('Slope from Psychometric Function')
+```
+
+- All slope estimates are positive.
+- There are very few suspicious slope estimates.
+
+Overall, this approach seems to be working well.
+
+### Individual Fits
+
+Here, we plot out a handful of subjects for sanity checking purposes. Of particular interest are those with the highest slope discrepency.
+
+```{r}
+worst_data =
+  subject_data %>%
+  group_by(site) %>%
+  arrange(desc(abs(slope_diff))) %>%
+  slice(1)
+
+best_data =
+  subject_data %>%
+  group_by(site) %>%
+  arrange((abs(slope_diff))) %>%
+  slice(1)
+
+worst_plots <- foreach (i=1:nrow(worst_data)) %do%{
+  
+  # Get the current model
+  mod = worst_data[i,]
+  
+  # Need original data to get relevant SNR range
+  snr =
+    hint_ts %>%
+    filter(sub_id==mod$sub_id, masker==mod$masker)
+  
+  # Domain
+  x = seq(min(snr$snr), max(snr$snr),1) # 1 dB steps to start
+  
+  # Response
+  y = predict(mod$mod[[1]], data.frame(snr=x), type='response')
+  
+  # Create plot
+  ggplot(
+    data.frame(x=x, y=y), 
+    aes(x=x, y=y)) + geom_point(size=3) + # plot fit
+    geom_line(size=2) +  
+    geom_point(data=snr, aes(x=snr, y=score/100), colour='red', size=4, position=position_jitter(h=0.1, w=0.1)) + # plot original data points
+    #geom_jitter(data=snr, aes(x=snr, y=score/100)) + # jitter plotted points so they aren't stacked on top of one another.
+    ggtitle(paste0(mod$sub_id, '-', mod$masker)) + # put a title on it!
+    ylab('Score') +
+    xlab('SNR (dB)') +
+    scale_x_continuous(breaks=seq(min(x), max(x), 1)) + # 1 dB ticks
+    ylim(0, 1) + # show full axes
+    scale_y_continuous(breaks=seq(0,1,0.05)) +
+    geom_point(data=mod, aes(x=snr50_staircase, y=0.50), colour='green', size=5) +
+    geom_point(data=mod, aes(x=snr80_staircase, y=0.80), colour='blue', size=5)
+}
+
+best_plots <- foreach (i=1:nrow(best_data)) %do%{
+  
+  # Get the current model
+  mod = best_data[i,]
+  
+  # Need original data to get relevant SNR range
+  snr =
+    hint_ts %>%
+    filter(sub_id==mod$sub_id, masker==mod$masker)
+  
+  # Domain
+  x = seq(min(snr$snr), max(snr$snr),1) # 1 dB steps to start
+  
+  # Response
+  y = predict(mod$mod[[1]], data.frame(snr=x), type='response')
+  
+  # Create plot
+  ggplot(
+    data.frame(x=x, y=y), 
+    aes(x=x, y=y)) + geom_point(size=3) + # plot fit
+    geom_line(size=2) +  
+    geom_point(data=snr, aes(x=snr, y=score/100), colour='red', size=4, position=position_jitter(h=0.1, w=0.1)) + # plot original data points
+    #geom_jitter(data=snr, aes(x=snr, y=score/100)) + # jitter plotted points so they aren't stacked on top of one another.
+    ggtitle(paste0(mod$sub_id, '-', mod$masker)) + # put a title on it!
+    ylab('Score') +
+    xlab('SNR (dB)') +
+    scale_x_continuous(breaks=seq(min(x), max(x), 1)) + # 1 dB ticks
+    ylim(0, 1) + # show full axes
+    scale_y_continuous(breaks=seq(0,1,0.05)) +
+    geom_point(data=mod, aes(x=snr50_staircase, y=0.50), colour='green', size=5) +
+    geom_point(data=mod, aes(x=snr80_staircase, y=0.80), colour='blue', size=5)
+}
+
+```
+
+#### Largest Slope Discrepancies
+
+```{r worst_plots, fig.cap='Individual plots with largest staircase/psychometric slope discrepancies. Red points are trial-to-trial score data (binary in this case). Green points are SNR-50 staircase estimates. Blue points are SNR-80 staircase estimates. The black trace depicts the overall psychometric fit.'}
+
+grid.arrange(worst_plots[[1]], worst_plots[[2]])
+```
+
+#### Smallest Slope Discrepancies
+
+```{r best_plots, fig.cap='Individual plots with smallest staircase/psychometric slope discrepancies. Red points are trial-to-trial score data (binary in this case). Green points are SNR-50 staircase estimates. Blue points are SNR-80 staircase estimates. The black trace depicts the overall psychometric fit.'}
+
+grid.arrange(best_plots[[1]], best_plots[[2]])
+```
+
+## Slope Estimates Using Continuous Outcomes
+
+*Michael*, this is where I could use your help. We have all the building blocks above; we just need to estimate % scores for each trial and repeat the above. 
+
+*Note*, you may need to modify the GLM a bit ... not 100% sure it will behave with a continuous measure assuming a binomial fit. Need to tinker.
+
+## Summary
+
+- Psychometric fits with binary trial scoring seems to be working well.
+- There are very few if any outliers using this approach.
+- The slope estimates seem to be far more plausible using this approach than the staircase estimates.
+
+Other thoughts?
+
+## Appendix
+
+Here are the digested data used in the analysis described above.
+
+```{r, results='asis'}
+knitr::kable(subject_data %>% select(-mod, -contains('mean')), caption='Slope estimate table')
 ```
 
 ```{r}
 # # Estimate slopes for each subject in each condition. Append to models structure
-# slopes <- foreach(i=1:nrow(models), .combine=rbind) %do%{
-#   
-#   mod = models[i,]
-#   
-#   # Need original data to get relevant SNR range
-#   snr =
-#     hint_ts %>%
-#     filter(sub_id==mod$sub_id, masker==mod$masker)
-#   
-#   # Estimate slope at 50% point with 0.001 dB steps
-#   slope = meas.slope(mod$mod[[1]], yval=0.5, xmin=min(snr$snr), xmax=max(snr$snr), step_size=0.001)
-#   
-#   return(mod %>% mutate(slope=slope*100))
-#   
-# }
+
 # 
 # # Add site labels
 # slopes = slopes %>% assign.site()
@@ -191,31 +408,3 @@ models =
 #     scale_y_continuous(breaks=seq(0,1,0.05))
 # }
 ```
-
-## Overview
-
-During preliminary analysis, Michael Lee and Chris Bishop found that individual slope estimates were unreliable when using estimated SNR-50/-80 as data points. For instance, several subjects had very large (>100 %/dB) slopes, suggesting that SNR-50 and SNR-80 estimates were nearly identical. This is unexpected from a psychophysical point of view and CWB suggsted that this was due to the inherent noise in staircase-driven estimates.
-
-Additionally, CWB suggested an alternative approach by which all individual trials for a given noise type were used to generate a subject-and-masker-specific psychometric function. This function could then be used to derive slope information in a more robust way.
-
-This report is CWB's attempt to apply and vet the approach above.
-
-## Approach in Detail
-
-XXX
-
-## Slope Estimates Using Binary Outcomes
-
-The following section describes psychometric fits following the traditional HINT scoring criteria. That is, each trial is either correct (all words repeated correctly) or incorrect (one or more words not repeated correctly).
-
-The psychometric fits in this section will relate most directly to existing HINT literature and findings.
-
-```{r binary_fits}
-```
-### Individual Fits
-
-### Group Results
-
-## Slope Estimates Using Continuous Outcomes
-
-## Summary
